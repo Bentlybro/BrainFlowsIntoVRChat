@@ -1,9 +1,10 @@
 import tensorflow as tf
 import keras
 
-from keras.models import Sequential
+from keras.models import Sequential, Model
 from keras.layers import Dense, Layer, Conv2D, DepthwiseConv2D, SeparableConv2D , Conv1D
-from keras.layers import Activation, Multiply, BatchNormalization, SpatialDropout1D, UpSampling2D, GlobalAveragePooling2D
+from keras.layers import Activation, Multiply, BatchNormalization, SpatialDropout1D, UpSampling2D, GlobalAveragePooling2D, LayerNormalization
+from keras.losses import MeanSquaredError as MSE
 
 ## Spatial Attention (Thanks Summer!)
 @keras.saving.register_keras_serializable()
@@ -56,72 +57,96 @@ e_rates = [1, 2]
 d_rates = list(reversed(e_rates))
 act = 'elu'
 
-def create_inner_layer(filters, kernel, dilation_rates, end_stride=1):
-    # dialated depthwise convolves followed by pointwise convolve
-    return Sequential(
-        [DepthwiseConv2D(kernel, padding='same', dilation_rate=dr) for dr in dilation_rates] + 
-        [Conv2D(filters, 1, padding='same', strides=end_stride)]
-    )
-
 @keras.utils.register_keras_serializable()
-class Block(Layer):
-    def __init__(self, filters, kernel, dilation_rates, strides=1, **kwargs):
-        super(Block, self).__init__(**kwargs)
-        self.inner_layer = create_inner_layer(filters, kernel, dilation_rates, strides)
-        self.residual = Conv2D(filters, 1, padding='same', strides=strides)
-
+class StackedDepthSeperableConv2D(Layer):
+    def __init__(self, filters, kernel_size, dilation_rates, stride=1, use_residual=False, **kwargs):
+        super(StackedDepthSeperableConv2D, self).__init__(**kwargs)
+        self.filters = filters
+        self.dilation_rates = dilation_rates
+        self.depthwise_stack = Sequential([DepthwiseConv2D(kernel_size, padding='same', dilation_rate=dr) for dr in dilation_rates])
+        self.pointwise_conv = Conv2D(filters, 1, padding='same', strides=stride)
+        self.residual_conv = None
+        if use_residual:
+            self.residual_conv = Conv2D(filters, 1, padding='same', strides=stride)
+    
     def call(self, inputs):
-        x = self.inner_layer(inputs)
-        r = self.residual(inputs)
-        return x + r
-
+        output = self.depthwise_stack(inputs)
+        output = self.pointwise_conv(output)
+        if self.residual_conv:
+            output += self.residual_conv(inputs)
+        return output
+    
     def build(self, input_shape):
-        super(Block, self).build(input_shape)
+        super(StackedDepthSeperableConv2D, self).build(input_shape)
 
 
 encoder = Sequential([
     ExpandDimsLayer(),
-    Block(16, kernel, e_rates, 2),
+    StackedDepthSeperableConv2D(16, kernel, e_rates, 2, True),
     BatchNormalization(), Activation(act), # (80, 32, 16)
     
-    Block(16, kernel, e_rates, 2),
+    StackedDepthSeperableConv2D(16, kernel, e_rates, 2, True),
     BatchNormalization(), Activation(act), # (40, 16, 16)
     
-    Block(16, kernel, e_rates, 2),
+    StackedDepthSeperableConv2D(16, kernel, e_rates, 2, True),
     BatchNormalization(), Activation(act), # (20, 8, 16)
 
-    create_inner_layer(16, kernel, e_rates), Activation(act)
+    StackedDepthSeperableConv2D(16, kernel, e_rates, 1, False), 
+    Activation('linear')
 ])
 
 decoder = Sequential([
-    Block(16, kernel, d_rates),
+    StackedDepthSeperableConv2D(16, kernel, d_rates, 1, True),
     BatchNormalization(), Activation(act), UpSampling2D(2),
     
-    Block(16, kernel, d_rates),
+    StackedDepthSeperableConv2D(16, kernel, d_rates, 1, True),
     BatchNormalization(), Activation(act), UpSampling2D(2),
 
-    Block(16, kernel, d_rates),
+    StackedDepthSeperableConv2D(16, kernel, d_rates, 1, True),
     BatchNormalization(), Activation(act), UpSampling2D(2),
     
-    create_inner_layer(1, kernel, d_rates), Activation('relu'),
+    StackedDepthSeperableConv2D(1, kernel, d_rates, 1, False), Activation('linear'),
     SqueezeDimsLayer()
 ])
 
-auto_encoder = Sequential([
-    SpatialDropout1D(0.2),
-    encoder,
-    decoder
-])
+## AutoEncoder Wrapper for edf_train
+class CustomAutoencoder(Model):
+    def __init__(self, encoder, decoder, perceptual_weight=1.0, sd_rate=0.2):
+        super(CustomAutoencoder, self).__init__()
+        self.spatial_dropout = SpatialDropout1D(sd_rate)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.perceptual_weight = perceptual_weight
+        self.mse_loss = MSE()
+
+    def call(self, inputs):
+        # Encoding and reconstructing the input
+        inputs = self.spatial_dropout(inputs)
+        original_features = self.encoder(inputs)
+        reconstruction = self.decoder(original_features)
+        
+        # get features from reconstruction
+        reconstructed_features = self.encoder(reconstruction)
+
+        # Compute and add perceptual loss during the call
+        perceptual_loss = self.mse_loss(original_features, reconstructed_features)
+        self.add_loss(self.perceptual_weight * perceptual_loss)
+
+        # Return only the reconstruction for the main loss computation
+        return reconstruction
+    
+auto_encoder = CustomAutoencoder(encoder, decoder)
 
 ## First Layer to convert any channels to 64 ranged [0, 1]
 def create_first_layer(chs=64):
     return Sequential([
+        AddNoiseLayer(0.2),
         Conv1D(chs, 3, padding='causal', dilation_rate=1),
-        BatchNormalization(), Activation(act),
+        LayerNormalization(), Activation(act),
         Conv1D(chs, 3, padding='causal', dilation_rate=2),
-        BatchNormalization(), Activation(act), 
+        LayerNormalization(), Activation(act), 
         Conv1D(chs, 3, padding='causal', dilation_rate=4),
-        BatchNormalization(), AddNoiseLayer(0.1), Activation('relu'),
+        Activation('linear'),
     ])
 
 ## Last Layer to map latent space to custom classes
