@@ -195,7 +195,7 @@ def main():
     import tensorflow as tf
 
     # Assuming `latent` has shape (samples, timesteps, channels, features)
-    model = Sequential(model.layers[:9])
+    model = Sequential(model.layers[:-1])
     latent = model(X_test)
     
     # Step 1: Reshape to 2D by flattening the last three dimensions

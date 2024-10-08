@@ -13,8 +13,9 @@ class SpatialAttention(Layer):
         super(SpatialAttention, self).__init__(**kwargs)
         self.kernel_size = kernel_size
         self.classes = classes
-        self.conv1 = Conv1D(self.classes, self.kernel_size, padding='same', activation='silu', use_bias=False)
-        self.conv2 = Conv1D(1, self.kernel_size, padding='same', activation='sigmoid', use_bias=False)
+        self.conv1 = Conv1D(self.classes, self.kernel_size, padding='same', activation='elu')
+        self.focus = Conv1D(1, self.kernel_size, padding='same')
+        self.aware = Conv1D(1, self.kernel_size, padding='same', activation='sigmoid')
     
     def build(self, input_shape):
         super(SpatialAttention, self).build(input_shape)
@@ -24,20 +25,16 @@ class SpatialAttention(Layer):
         max_out = tf.reduce_max(inputs, axis=-1, keepdims=True)
         x = tf.concat([avg_out, max_out], axis=2)
         x = self.conv1(x)
-        x = self.conv2(x)
-        return Multiply()([inputs, x])
+        focus_score = tf.nn.softmax(self.focus(x), axis=1)
+        aware_score = self.aware(x)
+        avg_score = (focus_score + aware_score) / 2
+        return Multiply()([inputs, avg_score])
 
 @keras.utils.register_keras_serializable()
-class SelfAttention(Layer):
-    def __init__(self, **kwargs):
-        super(SelfAttention, self).__init__(**kwargs)
-        self.attn = Attention()
-    
-    def call(self, x):
-        return self.attn([x, x])
-
-    def build(self, input_shape):
-        super(SelfAttention, self).build(input_shape)
+class SpatialAttentionPool(SpatialAttention):
+    def call(self, inputs):
+        x = super(SpatialAttentionPool, self).call(inputs)
+        return tf.reduce_sum(x, axis=1)
 
 # Noise Layer 
 @keras.utils.register_keras_serializable()
@@ -148,17 +145,21 @@ def create_classifier(encoder, classes):
     e_output_chans = encoder.output_shape[-1]
     return Sequential([
         # Expansion Block
-        AddNoiseLayer(0.2),
-        Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=1), Activation(act),
-        Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=2), Activation(act), 
-        Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=4), Activation(tanh3),
+        Sequential([
+            Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=1), Activation(act),
+            Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=2), Activation(act), 
+            Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=4), Activation(tanh3),
+            SpatialDropout1D(0.2)
+        ]),
 
         encoder,
 
         # Classification Block
-        GlobalAveragePooling1D(),
-        Dropout(0.5),
-        Dense(e_output_chans, activation=act),
-        Dropout(0.5),
-        Dense(classes, activation='softmax', kernel_regularizer='l2')
+        Sequential([
+            SpatialAttentionPool(classes),
+            Dropout(0.5),
+            Dense(e_output_chans, activation=act),
+            Dropout(0.5),
+            Dense(classes, activation='softmax', kernel_regularizer='l2')
+        ])
     ])
