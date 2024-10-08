@@ -14,8 +14,7 @@ class SpatialAttention(Layer):
         self.kernel_size = kernel_size
         self.classes = classes
         self.conv1 = Conv1D(self.classes, self.kernel_size, padding='same', activation='elu')
-        self.focus = Conv1D(1, self.kernel_size, padding='same')
-        self.aware = Conv1D(1, self.kernel_size, padding='same', activation='sigmoid')
+        self.conv2 = Conv1D(1, self.kernel_size, padding='same', activation='sigmoid')
     
     def build(self, input_shape):
         super(SpatialAttention, self).build(input_shape)
@@ -25,10 +24,8 @@ class SpatialAttention(Layer):
         max_out = tf.reduce_max(inputs, axis=-1, keepdims=True)
         x = tf.concat([avg_out, max_out], axis=2)
         x = self.conv1(x)
-        focus_score = tf.nn.softmax(self.focus(x), axis=1)
-        aware_score = self.aware(x)
-        avg_score = (focus_score + aware_score) / 2
-        return Multiply()([inputs, avg_score])
+        x = self.conv2(x)
+        return Multiply()([inputs, x])
 
 @keras.utils.register_keras_serializable()
 class SpatialAttentionPool(SpatialAttention):
