@@ -11,9 +11,10 @@ import keras
 from keras.optimizers import Adam
 from keras.callbacks import EarlyStopping
 from keras.utils import to_categorical
+from keras.models import Sequential
 from sklearn.metrics import classification_report
 
-from model import partial_trainable, PerceptualClassifier
+from model import create_classifier
 from pipeline import preprocess_data, extract_features
 
 SAVE_FILENAME = "recorded_eeg"
@@ -137,19 +138,16 @@ def main():
 
     ## load pretrained encoder and keep it partially frozen
     pretrained_encoder = keras.models.load_model("physionet_encoder.keras")
-    partial_trainable(pretrained_encoder)
-    ## load pretrained decoder freeze it for use in perceptual loss
-    pretrained_decoder = keras.models.load_model("physionet_decoder.keras")
-    pretrained_decoder.trainable = False
+    pretrained_encoder.trainable = False
 
     ## get class count from training data
     classes = len(processed_windows)
 
     ## Create Model
-    model = PerceptualClassifier(pretrained_encoder, pretrained_decoder, classes, 1, 1)
+    model = create_classifier(pretrained_encoder, classes)
 
     ## Compile the model
-    model.compile(optimizer=Adam(), loss=model.get_loss_function())
+    model.compile(optimizer=Adam(), loss='categorical_crossentropy')
 
     ## Set up EarlyStopping
     early_stopping = EarlyStopping(monitor='val_loss', patience=2*4, restore_best_weights=True, verbose=0)
@@ -166,7 +164,6 @@ def main():
     )
 
     ## Print out model summary
-    model = model.get_lean_model()
     model.summary()
     
     ## Save models for realtime use
@@ -198,7 +195,7 @@ def main():
     import tensorflow as tf
 
     # Assuming `latent` has shape (samples, timesteps, channels, features)
-    model.layers[-1] = model.layers[-1].layers[0]
+    model = Sequential(model.layers[:9])
     latent = model(X_test)
     
     # Step 1: Reshape to 2D by flattening the last three dimensions
@@ -218,7 +215,7 @@ def main():
     plt.figure(figsize=(10, 10))
     scatter = plt.scatter(X_tsne[:, 0], X_tsne[:, 1], c=i_test, cmap='viridis', alpha=0.7)
     plt.colorbar(scatter, label='Labels')
-    plt.title('t-SNE Visualization of Labeled Data')
+    plt.title('t-SNE Viz of Labeled Data from Encoder')
     plt.xlabel('t-SNE Component 1')
     plt.ylabel('t-SNE Component 2')
     plt.grid(True)
