@@ -154,9 +154,9 @@ def create_classifier(encoder, classes):
     return Sequential([
         # Expansion Block
         Sequential([
-            Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=1), Activation(act),
-            Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=2), Activation(act), 
-            Conv1D(e_input_chans, kernel, padding='causal', dilation_rate=4), Activation(tanh3),
+            Conv1D(e_input_chans//4, kernel, padding='same'), Activation(act),
+            Conv1D(e_input_chans//2, kernel, padding='same'), Activation(act), 
+            Conv1D(e_input_chans//1, kernel, padding='same'), Activation('linear'),
             SpatialDropout1D(0.2)
         ]),
 
@@ -164,6 +164,7 @@ def create_classifier(encoder, classes):
 
         # Classification Block
         Sequential([
+            SpatialAttention(classes, 5),
             GlobalAveragePooling1D(),
             Dropout(0.5),
             Dense(classes, activation='softmax', kernel_regularizer='l2')
