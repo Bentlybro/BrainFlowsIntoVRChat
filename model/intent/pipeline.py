@@ -18,6 +18,7 @@ def preprocess_data(session_data, sampling_rate):
         DataFilter.remove_environmental_noise(session_data[eeg_chan], sampling_rate, NoiseTypes.FIFTY_AND_SIXTY.value)
         # bandpass to alpha, beta, gamma, 80 for resample effect mitigation
         DataFilter.perform_bandpass(session_data[eeg_chan], sampling_rate, 8, 80, 4, FilterTypes.BUTTERWORTH.value, 0) 
+    session_data = scaler.fit_transform(session_data.reshape(-1, 1)).reshape(session_data.shape)
     return session_data
 
 def extract_features(preprocessed_data):
