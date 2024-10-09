@@ -1,5 +1,6 @@
 import tensorflow as tf
 import keras
+import numpy as np
 
 from keras.models import Sequential, Model
 from keras.layers import Dense, Layer, DepthwiseConv1D, Conv1D, Attention
@@ -55,7 +56,7 @@ filters = 32
 e_rates = [1, 2, 4]
 d_rates = list(reversed(e_rates))
 act = 'elu'
-hidden_layers = 3 # (160, 64) => (20, 32) = 640
+hidden_layers = 4 # (160, 64) => (10, 32) = 320
 
 ## Modification of seperable convolutions to follow along this paper
 ## https://journalofcloudcomputing.springeropen.com/articles/10.1186/s13677-020-00203-9
@@ -104,33 +105,44 @@ decoder = Sequential(
 )  
 
 ## AutoEncoder Wrapper for edf_train
-## Tunes for both feature and reconstruction losses
 class CustomAutoencoder(Model):
-    def __init__(self, encoder, decoder, perceptual_weight=1.0, sd_rate=0.2):
+    def __init__(self, encoder, decoder, max_noise=0.9, min_noise=0.1, rate=1.0, dropout=0.2):
         super(CustomAutoencoder, self).__init__()
-        self.spatial_dropout = SpatialDropout1D(sd_rate)
+        self.max_noise = max_noise
+        self.min_noise = min_noise
+        self.rate = rate
+        self.twopi = tf.constant(2.0 * np.pi)
+        self.step = 0.0
+
+        self.dropout = SpatialDropout1D(dropout)
         self.encoder = encoder
         self.decoder = decoder
-        self.perceptual_weight = perceptual_weight
+
         self.mse_loss = MSE()
 
-    def call(self, inputs):
-        # Encoding and reconstructing the input
-        inputs = self.spatial_dropout(inputs)
-        original_features = self.encoder(inputs)
-        reconstruction = self.decoder(original_features)
-        
-        # get features from reconstruction
-        reconstructed_features = self.encoder(reconstruction)
-
-        # Compute and add perceptual loss during the call
-        perceptual_loss = self.mse_loss(original_features, reconstructed_features)
-        self.add_loss(self.perceptual_weight * perceptual_loss)
-
-        # Return only the reconstruction for the main loss computation
-        return reconstruction
     
-auto_encoder = CustomAutoencoder(encoder, decoder)
+    def add_noise(self, inputs, step):
+        sin_mod = tf.sin(self.twopi * step)**2
+        noise_factor = (self.max_noise - self.min_noise) * sin_mod + self.min_noise
+        noise = tf.random.normal(shape=tf.shape(inputs), mean=0.0, stddev=noise_factor)
+        return noise + inputs, noise
+
+    def call(self, inputs, training=None):
+        noisy_inputs, noise_true = self.add_noise(inputs, self.step)
+        
+        drop_input = self.dropout(noisy_inputs)
+        features = self.encoder(drop_input)
+        noise_pred = self.decoder(features)
+        
+        loss = self.mse_loss(noise_true, noise_pred)
+        self.add_loss(loss)
+
+        if training:
+            self.step += self.rate
+
+        return noisy_inputs - noise_pred
+    
+auto_encoder = CustomAutoencoder(encoder, decoder, 3.0, 0.5, 1/5000)
 
 # Custom Activation to maintain zero centered with max standard deviation of 3
 def tanh3(x):
@@ -139,7 +151,6 @@ keras.utils.get_custom_objects().update({'tanh3': tanh3})
 
 def create_classifier(encoder, classes):
     e_input_chans = encoder.input_shape[-1]
-    e_output_chans = encoder.output_shape[-1]
     return Sequential([
         # Expansion Block
         Sequential([
@@ -153,9 +164,7 @@ def create_classifier(encoder, classes):
 
         # Classification Block
         Sequential([
-            SpatialAttentionPool(classes),
-            Dropout(0.5),
-            Dense(e_output_chans, activation=act),
+            GlobalAveragePooling1D(),
             Dropout(0.5),
             Dense(classes, activation='softmax', kernel_regularizer='l2')
         ])
