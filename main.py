@@ -11,6 +11,7 @@ from logic.power_bands import PwrBands
 from logic.neuro_feedback import NeuroFB
 from logic.biometrics import Biometrics
 from logic.addons import Addons
+from logic.blink_detection import BlinkDetection
 
 from reporters.osc_reporter import OSC_Reporter
 from reporters.debug_osc_reporter import Debug_Reporter
@@ -131,7 +132,8 @@ def BoardInit(args: argparse.Namespace) -> tuple[BoardShim, list[BaseLogic], int
         PwrBands(board, window_seconds=window_seconds, ema_decay=ema_decay),
         NeuroFB(board, window_seconds=window_seconds, ema_decay=ema_decay),
         Addons(board, window_seconds=window_seconds, ema_decay=ema_decay),
-        biometrics_logic
+        biometrics_logic,
+        BlinkDetection(board, window_seconds=1, blink_duration=0.5)
     ]
 
     ### Muse 2/S heartbeat support ###
