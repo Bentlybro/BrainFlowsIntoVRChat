@@ -133,7 +133,7 @@ def BoardInit(args: argparse.Namespace) -> tuple[BoardShim, list[BaseLogic], int
         NeuroFB(board, window_seconds=window_seconds, ema_decay=ema_decay),
         Addons(board, window_seconds=window_seconds, ema_decay=ema_decay),
         biometrics_logic,
-        BlinkDetection(board, window_seconds=1, blink_duration=0.5)
+        BlinkDetection(board, window_seconds=window_seconds, threshold=100, blink_duration=0.2, max_blink_duration=0.4, min_blink_interval=0.5)
     ]
 
     ### Muse 2/S heartbeat support ###
